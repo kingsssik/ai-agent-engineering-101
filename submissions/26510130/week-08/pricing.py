@@ -21,7 +21,11 @@ from datetime import datetime, timezone
 import market_memory as mm
 
 ROUND_END = float(os.environ.get("ROUND_END", datetime(2026, 11, 17, 14, 59, tzinfo=timezone.utc).timestamp()))
-MARGIN = 1.12                  # fresh unit: at least cost + 12 %
+MARGIN = 1.04                  # fresh unit: at least cost + 4 % (11-10: was 1.12; grade A costs ~0.66 of list,
+                               # so its floor sat at 0.74, above what buyers pay -- 61 deals from 715 openings)
+ASK_CAP = {"A": 0.70, "B": 0.70}   # opening ask / list. Deals per opening, 11-08..11-10: A 35 % at 0.70,
+                               # 12 % at 0.75, 2 % at 0.85; B 48 % at 0.70, 25 % at 0.75. C converts ~25 % at
+                               # any ask from 0.65 to 0.80, so C keeps the higher ask.
 WARRANTY_HOURS = 6             # goods break up to 6 h after the sale
 WARRANTY_MAX_RATE = 0.12       # offer a warranty only below this break rate
 
@@ -60,7 +64,7 @@ def mm_round_end():
 def ask(unit, mem, now=None):
     lp = unit.get("list_price") or 0
     ratio = mm.paid_ratio(mem, unit.get("category"), default=0.9)
-    a = lp * min(1.0, ratio + 0.08)
+    a = lp * min(1.0, ratio + 0.08, ASK_CAP.get(str(unit.get("grade")), 1.0))
     return max(floor(unit, mem, now), int(round(a)))
 
 

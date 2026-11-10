@@ -42,7 +42,10 @@ ASK_MIN_RATE = 0.5             # asks/h before a SKU asked of this shop is stock
 ASK_SELL_THROUGH = 0.3         # deals per ask: 753 deals from 2,490 negotiations, 11-08..11-10
 ASK_HORIZON_H = 1.5            # stock for this long: a supply window opens every 20 min, but not always on time
 ASK_MAX_QTY = 20               # the market's per-line limit
-SURGE_MAX = 1.15               # skip a SKU whose market-wide surge has pushed cost up more than this
+SURGE_MAX = 1.06               # skip a SKU whose market-wide surge has pushed cost up more than this
+                               # (11-10: was 1.15; a grade-A unit costs ~0.66 of list, so +10 % surge puts
+                               # its floor above the 0.70 opening ask buyers take)
+SUPPLY_LINE_S = 11             # one supply line takes ~10 s; lines past the window's close wait 90 s and drop
 SEED_SPEND = 1_200_000         # cold start: at most this much, spread wide
 COLD_SETTLES = 40              # market settles seen before demand is trusted
 MAX_LIST = 400_000             # dearer SKUs only when their category is selling
@@ -91,6 +94,11 @@ def plan(inv, demand, cat, mem, now):
     if win and not win.get("open") and (win.get("opens_at") or 0) - now > 20:
         # Outside a window the kit waits 90 s per line and then drops it: a plan sent now is lost.
         return [], f"supply window closed, opens in {win['opens_at'] - now:.0f} s"
+    lines = LINES
+    if win.get("open") and win.get("closes_at"):
+        lines = min(LINES, int((win["closes_at"] - now) / SUPPLY_LINE_S))
+        if lines < 1:
+            return [], "supply window closing: no time for a line"
     cap = min(STOCK_CAP_MAX, max(STOCK_CAP, STOCK_SHARE * (balance + held)))
     room = min(balance - CASH_FLOOR, cap - held)
     if room <= 0:
@@ -103,7 +111,7 @@ def plan(inv, demand, cat, mem, now):
     # 1. What buyers asked this shop for (asks.py): demand seen directly, SKU by SKU.
     spent = 0
     for sku, (rate, miss) in sorted(asks.rates(now).items(), key=lambda kv: -kv[1][0]):
-        if rate < ASK_MIN_RATE or len(buy) >= LINES or sku not in cat:
+        if rate < ASK_MIN_RATE or len(buy) >= lines or sku not in cat:
             continue
         x = cat[sku]
         if surge.get(sku, 1.0) > SURGE_MAX:
@@ -125,7 +133,7 @@ def plan(inv, demand, cat, mem, now):
         spent += lp * EST_COST * surge.get(sku, 1.0) * qty
         have[x["category"]] += qty
     room -= spent
-    if len(buy) >= LINES or room <= 0:
+    if len(buy) >= lines or room <= 0:
         return buy, "asks: " + "; ".join(why)
     if settles < COLD_SETTLES:
         # Seed: one unit in many categories, cheapest-to-hold first (goods, then long-shelf food).
@@ -143,7 +151,7 @@ def plan(inv, demand, cat, mem, now):
             buy.append({"sku": sku, "qty": 1})
             why.append(f"seed {leaf(c)}")
             spent += est
-            if len(buy) >= LINES:
+            if len(buy) >= lines:
                 break
         return buy, f"cold start ({settles} settles seen): " + ", ".join(why)
 
@@ -176,9 +184,9 @@ def plan(inv, demand, cat, mem, now):
             why.append(f"{leaf(c)} x{qty} (score {score:.1f}, have {have[c]}, sku sold {hot_sku.get(sku, 0):.1f})")
             spent += est
             need -= qty
-            if need <= 0 or len(buy) >= LINES:
+            if need <= 0 or len(buy) >= lines:
                 break
-        if len(buy) >= LINES:
+        if len(buy) >= lines:
             break
     return buy, "demand: " + "; ".join(why) if why else "demand: every hot category is stocked"
 
