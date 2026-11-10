@@ -52,8 +52,10 @@ def floor(unit, mem, now=None):
     if h is not None:                                      # food: what is it worth if it does not sell soon?
         if h < 6:
             f = cost * 0.3
-        elif h < 24:
-            f = cost * 0.7
+        elif h < 12:                                       # 11-11 04:39: was h < 24. 545 catalog foods have a
+            f = cost * 0.7                                 # 24 h shelf, so they arrived already under cost x 0.7:
+                                                           # 02:45-04:39, 124 of 417 deals sold below cost (-218k),
+                                                           # 80 of them 24 h rice (Gb2392fa9); 0 expired since 20:35
         elif str(unit.get("grade")) == "C":
             f = cost * 1.0
     to_end = (mm_round_end() - now) / 3600
