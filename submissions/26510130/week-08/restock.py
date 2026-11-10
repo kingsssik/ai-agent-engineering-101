@@ -87,6 +87,10 @@ def plan(inv, demand, cat, mem, now):
 
     if ROUND_END - now < STOP_BEFORE_END:
         return [], "last hours of the round: selling down, buying nothing"
+    win = inv.get("restock") or {}
+    if win and not win.get("open") and (win.get("opens_at") or 0) - now > 20:
+        # Outside a window the kit waits 90 s per line and then drops it: a plan sent now is lost.
+        return [], f"supply window closed, opens in {win['opens_at'] - now:.0f} s"
     cap = min(STOCK_CAP_MAX, max(STOCK_CAP, STOCK_SHARE * (balance + held)))
     room = min(balance - CASH_FLOOR, cap - held)
     if room <= 0:
