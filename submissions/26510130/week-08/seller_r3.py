@@ -38,6 +38,7 @@ from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 
+import asks
 import harness
 import market_memory as mm
 import pricing
@@ -46,7 +47,9 @@ import receipts
 NAME = "YAHO1212"
 MARKET_DIR = Path(os.environ.get("MARKET_DIR", ".market"))
 MAX_ROUNDS = 6
-SOLD_TTL = 900                 # a unit with a receipt out is not offered again for 15 min
+SOLD_TTL = 300                 # a unit with a receipt out is not offered again for 5 min (the kit pays in seconds)
+OPEN_TTL = 600                 # a negotiation idle this long was abandoned by the buyer; forget it
+SKU_RE = re.compile(r"\((G[0-9a-f]{8})\)")
 R2_RESERVE = {"lamp": 100, "chair": 180, "bookshelf": 260}    # before Round 3 opens: the week-07 items
 
 
@@ -61,9 +64,15 @@ def inventory():
         return {}
 
 
-def find_unit(text, taken):
+def find_unit(text, taken, busy=frozenset()):
     """The unit for what the buyer asked: a SKU named in the message first, else a name or a
-    category. Among fitting units, the one that expires first (food), else the oldest."""
+    category. Among fitting units, one not already in another open negotiation, then the one
+    that expires first (food), else the oldest.
+
+    `taken` (units with a receipt out) are never offered. `busy` (units another buyer is
+    haggling over) still are: until 11-10 an open negotiation locked its unit, and buyers who
+    walked away mid-haggle (about 1,500 of 2,490 negotiations) left units locked until the
+    seller restarted -- the shop answered "none in stock" with the stock on the shelf."""
     want = text.lower()
     inv = inventory()
     if inv.get("round", 0) < 3:
@@ -78,7 +87,8 @@ def find_unit(text, taken):
     by_name = [u for u in units if (u.get("name") or "").lower() and (u.get("name") or "").lower() in want]
     by_cat = [u for u in units if (u.get("category") or "").split(">")[-1].lower() in want]
     fit = by_sku or by_name or by_cat
-    return min(fit, key=lambda u: (u.get("expires_at") or float("inf"), u.get("supplied_at") or 0), default=None)
+    return min(fit, key=lambda u: (u["unit"] in busy, u.get("expires_at") or float("inf"),
+                                   u.get("supplied_at") or 0), default=None)
 
 
 MOVE = """You are the sales agent of an online shop, negotiating the sale of one unit.
@@ -135,9 +145,16 @@ class Seller(AgentExecutor):
         self.done = set()
 
     def taken(self):
+        """Units with a receipt out. Also forgets negotiations the buyer abandoned."""
         now = time.time()
         self.sold = {k: t for k, t in self.sold.items() if now - t < SOLD_TTL}
-        return set(self.sold) | {d["unit"]["unit"] for d in self.open.values() if d["unit"].get("unit")}
+        for tid in [t for t, d in self.open.items() if now - d.get("t", now) > OPEN_TTL]:
+            self.open.pop(tid, None)
+            self.done.add(tid)
+        return set(self.sold)
+
+    def busy(self):
+        return {d["unit"]["unit"] for d in self.open.values() if d["unit"].get("unit")}
 
     async def execute(self, context, event_queue):
         task = context.current_task
@@ -154,7 +171,13 @@ class Seller(AgentExecutor):
         mem = mm.load()
 
         if deal is None:
-            u = find_unit(text, self.taken())
+            u = find_unit(text, self.taken(), self.busy())
+            m = SKU_RE.search(text)
+            if m:
+                try:
+                    asks.record(m.group(1), served=u is not None)
+                except OSError as e:
+                    log(f"[seller] asks.record failed: {e}")
             if u is None:
                 log(f"[seller] none in stock for {text[:100]!r}")
                 await up.reject(say("Sorry, none of that in stock right now."))
@@ -162,7 +185,7 @@ class Seller(AgentExecutor):
                 return
             fl, ask = pricing.floor(u, mem), pricing.ask(u, mem)
             w = pricing.warranty(u, mem) if u.get("unit") else 0
-            deal = self.open[task.id] = {"unit": u, "floor": fl, "ask": ask, "warranty": w,
+            deal = self.open[task.id] = {"unit": u, "floor": fl, "ask": ask, "warranty": w, "t": time.time(),
                                          "offer": None, "rounds": 0, "lines": [f"buyer: {text[:200]}"]}
             # The opening message is a request, not an offer: product names carry numbers (10kg, 540x230cm).
             log(f"[seller] {u['sku']} unit {u.get('unit')} cost {u.get('cost')} floor {fl} ask {ask}"
@@ -173,6 +196,7 @@ class Seller(AgentExecutor):
             await up.requires_input(say(reply))
             return
         else:
+            deal["t"] = time.time()
             deal["lines"].append(f"buyer: {text[:200]}")
             m = re.search(r"\d[\d,]*", text)
             if m:
@@ -180,6 +204,17 @@ class Seller(AgentExecutor):
 
         u = deal["unit"]
         action, price = await loop.run_in_executor(None, decide, deal, mem)
+        if action == "accept" and u.get("unit") and u["unit"] in self.taken():
+            # Another buyer closed on this unit while this one haggled: hand over a twin of the same SKU.
+            twin = find_unit(f"({u['sku']})", self.taken())
+            if twin is None or twin["sku"] != u["sku"]:
+                log(f"[seller] {u['sku']} sold out while haggling; no deal")
+                await up.reject(say("Sorry, that item just sold out."))
+                self.open.pop(task.id, None)
+                self.done.add(task.id)
+                return
+            log(f"[seller] unit {u['unit']} went to another buyer; selling twin {twin['unit']}")
+            u = deal["unit"] = twin
         if action == "accept":
             assert price >= deal["floor"], "code guard: never sell below the floor"
             receipt = receipts.sign_receipt({"shop": NAME, "item": u["sku"], "price": int(price),
