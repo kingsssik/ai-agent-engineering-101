@@ -36,11 +36,23 @@ LOG = HERE / "logs" / "restock.jsonl"
 ROUND_END = float(os.environ.get("ROUND_END", datetime(2026, 11, 17, 14, 59, tzinfo=timezone.utc).timestamp()))
 CASH_FLOOR = 1_500_000         # never spend below this
 STOCK_CAP = 2_500_000          # stock held, at cost: the floor of the cap below
-STOCK_SHARE = 0.35             # ... which grows with the balance (11-10: 20 M cash sat idle under a 2.5 M cap)
-STOCK_CAP_MAX = 10_000_000
+STOCK_SHARE = 0.70             # ... which grows with the balance (11-10: 20 M cash sat idle under a 2.5 M cap).
+                               # 11-10 21:00, volume strategy: was 0.35. Board, 52 shops: log deals vs log units
+                               # in stock r = 0.71, vs stars r = 0.12; YAHO1212 had 164 units and 8.8k visits
+                               # against 400-1,400 units and 30-60k visits for the top shops. Stock counts in
+                               # Book at cost, so holding it costs only storage (1 %/day), spoilage and breakage.
+STOCK_CAP_MAX = 30_000_000
+CAT_TARGET_MAX = 12            # units per selling category, long-shelf (was 6); short-shelf below
+CAT_TARGET_SHORT = 4           # (was 2)
+LINE_SPEND_SHARE = 0.08        # one asked-for line spends at most this share of the cap (a dry run wanted
+                               # 11 x a 546k sofa, asked 26/h but rarely bought at a floor above the median)
+LINE_QTY_MAX = 6              # units per line in the demand loop (was 3)
+BREADTH_MIN_SHELF_H = 168      # breadth: one unit in every long-shelf category not held, so the shop is shown
+BREADTH_MAX_LIST = 150_000     # to that category's orders at all
 ASK_MIN_RATE = 0.5             # asks/h before a SKU asked of this shop is stocked
 ASK_SELL_THROUGH = 0.3         # deals per ask: 753 deals from 2,490 negotiations, 11-08..11-10
-ASK_HORIZON_H = 1.5            # stock for this long: a supply window opens every 20 min, but not always on time
+ASK_HORIZON_H = 2.5            # stock for this long: a supply window opens every 20 min, but not always on time
+                               # (11-10 21:00: was 1.5; food is still held to 25 % of its shelf life)
 ASK_MAX_QTY = 20               # the market's per-line limit
 SURGE_MAX = 1.06               # skip a SKU whose market-wide surge has pushed cost up more than this
                                # (11-10: was 1.15; a grade-A unit costs ~0.66 of list, so +10 % surge puts
@@ -125,7 +137,8 @@ def plan(inv, demand, cat, mem, now):
         lp = x["list_price"]
         if qty < 1 or (lp > MAX_LIST and rate < 3):
             continue
-        qty = min(qty, int((room - spent) / (lp * EST_COST * surge.get(sku, 1.0))))
+        unit_cost = lp * EST_COST * surge.get(sku, 1.0)
+        qty = min(qty, int((room - spent) / unit_cost), max(1, int(LINE_SPEND_SHARE * cap / unit_cost)))
         if qty < 1:
             continue
         buy.append({"sku": sku, "qty": qty})
@@ -163,7 +176,7 @@ def plan(inv, demand, cat, mem, now):
         short = shelf.get(c, 1e9) < 96
         if short and score < 30:
             continue                                         # spoils before it sells
-        target = max(1, min(6 if not short else 2, math.ceil(score / 12)))
+        target = max(1, min(CAT_TARGET_MAX if not short else CAT_TARGET_SHORT, math.ceil(score / 6)))
         need = target - have[c]
         if need <= 0:
             continue
@@ -176,7 +189,7 @@ def plan(inv, demand, cat, mem, now):
                 continue
             if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy):
                 continue
-            qty = min(need, 3, max(1, int((room - spent) / (lp * EST_COST))))
+            qty = min(need, LINE_QTY_MAX, max(1, int((room - spent) / (lp * EST_COST))))
             est = lp * EST_COST * qty
             if qty < 1 or spent + est > room:
                 continue
@@ -188,6 +201,24 @@ def plan(inv, demand, cat, mem, now):
                 break
         if len(buy) >= lines:
             break
+    # Breadth: a shop with nothing in an order's category is not shown to that buyer at all.
+    if len(buy) < lines and spent < room:
+        wide = [d for d in demand if not have[d["category"]] and by_cat.get(d["category"])
+                and shelf.get(d["category"], 1e9) >= BREADTH_MIN_SHELF_H and d["median_price"] <= BREADTH_MAX_LIST]
+        wide.sort(key=lambda d: (-d["skus"], d["median_price"]))
+        for d in wide:
+            sku = next((s for s in nearest_median(by_cat[d["category"]], d["median_price"], cat)
+                        if surge.get(s, 1.0) <= SURGE_MAX and not any(b["sku"] == s for b in buy)), None)
+            if sku is None:
+                continue
+            est = cat[sku]["list_price"] * EST_COST
+            if spent + est > room:
+                continue
+            buy.append({"sku": sku, "qty": 1})
+            why.append(f"breadth {leaf(d['category'])}")
+            spent += est
+            if len(buy) >= lines:
+                break
     return buy, "demand: " + "; ".join(why) if why else "demand: every hot category is stocked"
 
 
