@@ -62,6 +62,35 @@ def record(sku, served, now=None):
         _flush(now)
 
 
+def seed_from_log(log_path):
+    """Rebuild the counts from a kit log (`[seller] none in stock for '... (Gxxxxxxxx)` and the
+    `[seller] Gxxxxxxxx unit ...` line written when a unit was offered). Log lines carry only
+    HH:MM:SS, so times are reconstructed backwards from the file's modification time."""
+    import re
+    lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    miss_re = re.compile(r"^(\d\d):(\d\d):(\d\d) \[seller\] \[seller\] none in stock for .*\((G[0-9a-f]{8})\)")
+    hit_re = re.compile(r"^(\d\d):(\d\d):(\d\d) \[seller\] \[seller\] (G[0-9a-f]{8}) unit ")
+    t, prev_sec, events = Path(log_path).stat().st_mtime, None, []
+    for line in reversed(lines):
+        m = miss_re.match(line) or hit_re.match(line)
+        if not m:
+            continue
+        sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        if prev_sec is not None:
+            t -= (prev_sec - sec) % 86400
+        prev_sec = sec
+        events.append((t, m.group(4), m.re is hit_re))
+    global _mem
+    _mem = {}
+    for when, sku, served in reversed(events):
+        row = _mem.setdefault(sku, {"n": 0.0, "miss": 0.0, "t": when})
+        _decay(row, when)
+        row["n"] += 1
+        row["miss"] += 0 if served else 1
+    _flush(time.time())
+    return len(events)
+
+
 def rates(now=None, path=FILE):
     """SKU -> (asks per hour, unserved asks per hour), from the decayed counts."""
     now = now or time.time()
@@ -71,3 +100,14 @@ def rates(now=None, path=FILE):
         f = 0.5 ** ((now - row["t"]) / HALF_LIFE)
         out[sku] = (row["n"] * f * per_hour, row.get("miss", 0.0) * f * per_hour)
     return out
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seed", help="kit log to rebuild memory/asks.json from")
+    a = ap.parse_args()
+    if a.seed:
+        print(f"{seed_from_log(a.seed)} asks folded into {FILE}")
+    for sku, (n, miss) in sorted(rates().items(), key=lambda kv: -kv[1][0])[:15]:
+        print(f"{sku} {n:6.1f} asks/h  {miss:6.1f} unserved/h")

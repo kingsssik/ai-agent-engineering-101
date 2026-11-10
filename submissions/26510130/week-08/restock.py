@@ -28,13 +28,21 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import asks
 import market_memory as mm
 
 HERE = Path(__file__).resolve().parent
 LOG = HERE / "logs" / "restock.jsonl"
 ROUND_END = float(os.environ.get("ROUND_END", datetime(2026, 11, 17, 14, 59, tzinfo=timezone.utc).timestamp()))
 CASH_FLOOR = 1_500_000         # never spend below this
-STOCK_CAP = 2_500_000          # stock held, at cost
+STOCK_CAP = 2_500_000          # stock held, at cost: the floor of the cap below
+STOCK_SHARE = 0.35             # ... which grows with the balance (11-10: 20 M cash sat idle under a 2.5 M cap)
+STOCK_CAP_MAX = 10_000_000
+ASK_MIN_RATE = 0.5             # asks/h before a SKU asked of this shop is stocked
+ASK_SELL_THROUGH = 0.3         # deals per ask: 753 deals from 2,490 negotiations, 11-08..11-10
+ASK_HORIZON_H = 1.5            # stock for this long: a supply window opens every 20 min, but not always on time
+ASK_MAX_QTY = 20               # the market's per-line limit
+SURGE_MAX = 1.15               # skip a SKU whose market-wide surge has pushed cost up more than this
 SEED_SPEND = 1_200_000         # cold start: at most this much, spread wide
 COLD_SETTLES = 40              # market settles seen before demand is trusted
 MAX_LIST = 400_000             # dearer SKUs only when their category is selling
@@ -79,12 +87,42 @@ def plan(inv, demand, cat, mem, now):
 
     if ROUND_END - now < STOP_BEFORE_END:
         return [], "last hours of the round: selling down, buying nothing"
-    room = min(balance - CASH_FLOOR, STOCK_CAP - held)
+    cap = min(STOCK_CAP_MAX, max(STOCK_CAP, STOCK_SHARE * (balance + held)))
+    room = min(balance - CASH_FLOOR, cap - held)
     if room <= 0:
-        return [], f"no room: balance {balance}, stock at cost {held}"
+        return [], f"no room: balance {balance}, stock at cost {held}, cap {cap:.0f}"
 
     settles = mem.get("seen", {}).get("settle", 0)
     buy, why = [], []
+    surge = {s["sku"]: s.get("factor", 1.0) for s in inv.get("surge") or []}
+
+    # 1. What buyers asked this shop for (asks.py): demand seen directly, SKU by SKU.
+    spent = 0
+    for sku, (rate, miss) in sorted(asks.rates(now).items(), key=lambda kv: -kv[1][0]):
+        if rate < ASK_MIN_RATE or len(buy) >= LINES or sku not in cat:
+            continue
+        x = cat[sku]
+        if surge.get(sku, 1.0) > SURGE_MAX:
+            why.append(f"skip {sku} surge {surge[sku]}")
+            continue
+        horizon = ASK_HORIZON_H
+        if x.get("kind") == "food" and x.get("shelf_hours"):
+            horizon = min(horizon, x["shelf_hours"] * 0.25)      # sell well inside the shelf life
+        target = min(ASK_MAX_QTY, math.ceil(rate * ASK_SELL_THROUGH * horizon))
+        qty = target - have_sku[sku]
+        lp = x["list_price"]
+        if qty < 1 or (lp > MAX_LIST and rate < 3):
+            continue
+        qty = min(qty, int((room - spent) / (lp * EST_COST * surge.get(sku, 1.0))))
+        if qty < 1:
+            continue
+        buy.append({"sku": sku, "qty": qty})
+        why.append(f"asked {sku} x{qty} ({rate:.1f}/h, {miss:.1f} unserved/h, have {have_sku[sku]})")
+        spent += lp * EST_COST * surge.get(sku, 1.0) * qty
+        have[x["category"]] += qty
+    room -= spent
+    if len(buy) >= LINES or room <= 0:
+        return buy, "asks: " + "; ".join(why)
     if settles < COLD_SETTLES:
         # Seed: one unit in many categories, cheapest-to-hold first (goods, then long-shelf food).
         spent = 0
@@ -123,6 +161,8 @@ def plan(inv, demand, cat, mem, now):
         for sku in skus[:2]:
             lp = cat[sku]["list_price"]
             if lp > MAX_LIST and score < 5:
+                continue
+            if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy):
                 continue
             qty = min(need, 3, max(1, int((room - spent) / (lp * EST_COST))))
             est = lp * EST_COST * qty
