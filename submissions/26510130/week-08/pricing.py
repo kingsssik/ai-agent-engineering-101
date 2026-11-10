@@ -26,6 +26,10 @@ MARGIN = 1.04                  # fresh unit: at least cost + 4 % (11-10: was 1.1
 ASK_CAP = {"A": 0.70, "B": 0.70}   # opening ask / list. Deals per opening, 11-08..11-10: A 35 % at 0.70,
                                # 12 % at 0.75, 2 % at 0.85; B 48 % at 0.70, 25 % at 0.75. C converts ~25 % at
                                # any ask from 0.65 to 0.80, so C keeps the higher ask.
+STAR_SHARE = 0.95              # open at most at 0.95 x the market's median for this SKU and grade. Ledger, 11-10,
+                               # 2,297 reviewed deals: stars 4.84 at 0.8x the median, 4.79 at 0.9x, 4.71 at 1.0x,
+                               # 4.57 at 1.2x; shops' stars sit within 4.31-4.46, so +0.05 moves several ranks.
+                               # YAHO1212 settled at 1.02x the median. Experiment from 11-10 20:30.
 WARRANTY_HOURS = 6             # goods break up to 6 h after the sale
 WARRANTY_MAX_RATE = 0.12       # offer a warranty only below this break rate
 
@@ -65,6 +69,9 @@ def ask(unit, mem, now=None):
     lp = unit.get("list_price") or 0
     ratio = mm.paid_ratio(mem, unit.get("category"), default=0.9)
     a = lp * min(1.0, ratio + 0.08, ASK_CAP.get(str(unit.get("grade")), 1.0))
+    med = mm.sku_median(mem, unit.get("sku"), unit.get("grade"))
+    if med:
+        a = min(a, med * STAR_SHARE)
     return max(floor(unit, mem, now), int(round(a)))
 
 

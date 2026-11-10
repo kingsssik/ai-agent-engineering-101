@@ -34,7 +34,8 @@ FILE = HERE / "memory" / "market.json"
 TAU = 24 * 3600            # demand decays with a one-day time constant
 MAX_PAGES = 40             # 500 entries a page; a longer backlog is skipped, not replayed
 KEEP_RATIOS = 300          # last paid/list ratios kept per category
-KEEP_SETTLES = 20000       # goods settles kept to match later `broken` entries
+KEEP_GRADE_PRICES = 15     # recent settle amounts kept per (SKU, grade): what this exact unit sells for
+KEEP_SETTLES = 20000      # goods settles kept to match later `broken` entries
 
 
 def empty():
@@ -112,6 +113,10 @@ def fold(mem, e, cat, names):
         if info.get("list_price") and isinstance(amount, (int, float)):
             crow["ratios"] = (crow["ratios"] + [round(amount / info["list_price"], 3)])[-KEEP_RATIOS:]
             srow["last_amount"] = amount
+        if isinstance(amount, (int, float)) and d.get("grade") is not None:
+            g = srow.setdefault("by_grade", {}).setdefault(str(d["grade"]), [])
+            g.append(amount)
+            del g[:-KEEP_GRADE_PRICES]
         shop = names.get(str(d.get("shop", "")).rstrip("/"), d.get("shop_name") or d.get("shop") or "?")
         sh = mem["shops"].setdefault(shop, {"sold": 0, "claims": 0, "dishonest": 0, "broken": 0, "goods": 0})
         sh["sold"] += 1
@@ -174,6 +179,12 @@ def update(state_dir=None, path=FILE, log=lambda m: None):
 
 
 # ------------------------------------------------------------ what the agents ask
+
+def sku_median(mem, sku, grade, min_n=4):
+    """Median settle amount of this SKU in this grade across the market, or None with too few deals."""
+    xs = sorted(((mem.get("sku") or {}).get(sku) or {}).get("by_grade", {}).get(str(grade), []))
+    return xs[len(xs) // 2] if len(xs) >= min_n else None
+
 
 def paid_ratio(mem, category, default=0.85):
     """Median price paid as a share of list price in a category (market-wide)."""
