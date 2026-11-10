@@ -26,7 +26,10 @@ MARGIN = 1.04                  # fresh unit: at least cost + 4 % (11-10: was 1.1
 ASK_CAP = {"A": 0.70, "B": 0.70}   # opening ask / list. Deals per opening, 11-08..11-10: A 35 % at 0.70,
                                # 12 % at 0.75, 2 % at 0.85; B 48 % at 0.70, 25 % at 0.75. C converts ~25 % at
                                # any ask from 0.65 to 0.80, so C keeps the higher ask.
-STAR_SHARE = 0.90              # 11-10 21:00 volume strategy: was 0.95. Buyers rank shops by what they paid there
+STAR_SHARE = 0.95              # 11-11 02:39 rolled back from 0.90: marginal book/revenue 0.059 (22:39-00:39) and
+                               # 0.003 (00:39-02:39), below the 0.08 rule twice; seller margin 9.0 % then 11.9 %
+                               # of sales, 3 warranty refunds 1.04M. Deals/visit 0.63 is kept by the stock cap.
+                               # 11-10 21:00 volume strategy: was 0.95. Buyers rank shops by what they paid there
                                # before (olstjr: ~0.58 of list, 150 units, 39.6k visits, margin 0.14, stars 4.52).
                                # Open at most at 0.95 x the market's median for this SKU and grade. Ledger, 11-10,
                                # 2,297 reviewed deals: stars 4.84 at 0.8x the median, 4.79 at 0.9x, 4.71 at 1.0x,
