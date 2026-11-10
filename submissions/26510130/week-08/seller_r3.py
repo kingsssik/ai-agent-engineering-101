@@ -58,6 +58,28 @@ def log(msg):
     harness.log(msg)
 
 
+FP_FILE = Path(__file__).resolve().parent / "memory" / "fingerprints.jsonl"
+FP_SALT = os.environ.get("FP_SALT") or NAME + "-fp"
+
+
+def fingerprint(context, text):
+    """Who is asking, as far as one request shows: a salted hash of the client address (the address
+    itself is never stored), the User-Agent, and the shape of the opening line. Step 1 of per-buyer
+    pricing: logged next to the task id, so the ledger's results (receipt.task -> buyer) can show
+    later whether a fingerprint names one buyer."""
+    import hashlib
+    h = {}
+    try:
+        h = {k.lower(): v for k, v in (context.call_context.state.get("headers") or {}).items()}
+    except AttributeError:
+        pass
+    ip = h.get("cf-connecting-ip") or (h.get("x-forwarded-for") or "").split(",")[0].strip()
+    shape = re.sub(r"\(G[0-9a-f]{8}\)", "(SKU)", text)
+    shape = re.sub(r"\d[\d,.]*", "9", shape)[:60]
+    return {"ip": hashlib.sha256((FP_SALT + ip).encode()).hexdigest()[:12] if ip else None,
+            "ua": (h.get("user-agent") or "")[:60], "shape": shape, "hdrs": sorted(h)[:30]}
+
+
 def inventory():
     try:
         return json.loads((MARKET_DIR / "inventory.json").read_text(encoding="utf-8"))
@@ -172,6 +194,13 @@ class Seller(AgentExecutor):
         mem = mm.load()
 
         if deal is None:
+            try:
+                fp = fingerprint(context, text)
+                FP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with FP_FILE.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": int(time.time()), "task": task.id, **fp}, ensure_ascii=False) + "\n")
+            except Exception as e:                           # noqa: BLE001 - never block a sale on logging
+                log(f"[seller] fingerprint failed: {type(e).__name__}: {e}")
             u = find_unit(text, self.taken(), self.busy())
             m = SKU_RE.search(text)
             if m:
