@@ -87,7 +87,7 @@ def inventory():
         return {}
 
 
-def find_unit(text, taken, busy=frozenset()):
+def find_unit(text, taken, busy=frozenset(), unpaid=None):
     """The unit for what the buyer asked: a SKU named in the message first, else a name or a
     category. Among fitting units, one not already in another open negotiation, then the one
     that expires first (food), else the oldest.
@@ -110,8 +110,14 @@ def find_unit(text, taken, busy=frozenset()):
     by_name = [u for u in units if (u.get("name") or "").lower() and (u.get("name") or "").lower() in want]
     by_cat = [u for u in units if (u.get("category") or "").split(">")[-1].lower() in want]
     fit = by_sku or by_name or by_cat
-    return min(fit, key=lambda u: (u["unit"] in busy, u.get("expires_at") or float("inf"),
-                                   u.get("supplied_at") or 0), default=None)
+    # 11-11 16:51: units a buyer agreed to but never paid for go last. Log 00:36-16:52: 753 of 2,584
+    # DEAL lines were repeats of an unpaid unit (C 168 units, B 84, A 9; one C unit 35 times) -- buyers'
+    # payment policies refuse C, so the same unit kept taking the order a payable unit could have won.
+    # Then the cheapest unit: A sofas at cost 1.31-1.66M were offered oldest-first at floors of 1.68-1.79M
+    # while buyers offered 1.40-1.53M, which the 1.31M unit's floor (1.43M) would have met.
+    unpaid = unpaid or {}
+    return min(fit, key=lambda u: (u["unit"] in busy, unpaid.get(u["unit"], 0), u.get("expires_at") or float("inf"),
+                                   u.get("cost") or 0), default=None)
 
 
 MOVE = """You are the sales agent of an online shop, negotiating the sale of one unit.
@@ -166,10 +172,15 @@ class Seller(AgentExecutor):
         self.open = {}         # task id -> deal
         self.sold = {}         # unit -> time a receipt went out
         self.done = set()
+        self.unpaid = {}       # unit -> receipts sent for it that were never paid (it came back to the shelf)
 
     def taken(self):
         """Units with a receipt out. Also forgets negotiations the buyer abandoned."""
         now = time.time()
+        held = {u["unit"] for u in inventory().get("units", [])}
+        for k, t in self.sold.items():
+            if now - t >= SOLD_TTL and k in held:            # receipt out, TTL over, still ours: never paid
+                self.unpaid[k] = self.unpaid.get(k, 0) + 1
         self.sold = {k: t for k, t in self.sold.items() if now - t < SOLD_TTL}
         for tid in [t for t, d in self.open.items() if now - d.get("t", now) > OPEN_TTL]:
             self.open.pop(tid, None)
@@ -201,7 +212,7 @@ class Seller(AgentExecutor):
                     fh.write(json.dumps({"ts": int(time.time()), "task": task.id, **fp}, ensure_ascii=False) + "\n")
             except Exception as e:                           # noqa: BLE001 - never block a sale on logging
                 log(f"[seller] fingerprint failed: {type(e).__name__}: {e}")
-            u = find_unit(text, self.taken(), self.busy())
+            u = find_unit(text, self.taken(), self.busy(), self.unpaid)
             m = SKU_RE.search(text)
             if m:
                 try:
