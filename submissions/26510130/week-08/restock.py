@@ -49,7 +49,11 @@ LINE_SPEND_SHARE = 0.08        # one asked-for line spends at most this share of
 LINE_QTY_MAX = 6              # units per line in the demand loop (was 3)
 BREADTH_MIN_SHELF_H = 168      # breadth: one unit in every long-shelf category not held, so the shop is shown
 BREADTH_MAX_LIST = 150_000     # to that category's orders at all
-ASK_MIN_RATE = 0.5             # asks/h before a SKU asked of this shop is stocked
+ASK_LINE_SHARE = 0.5           # 11-11 12:00: the asks loop took all 10 lines of every run topping up the same
+BREADTH_LINE_SHARE = 0.3       # ~12 SKUs by 1-2 units, so the demand and breadth loops never ran: 18 of 140
+TOPUP_MIN = 3                  # demand categories held, 24 SKUs, 21.6M cash idle under a 22.6M cap. Students'
+                               # median shop: 15,280 visits to our 11,871; deals vs stock units r = 0.71.
+ASK_MIN_RATE = 0.5            # asks/h before a SKU asked of this shop is stocked
 ASK_SELL_THROUGH = 0.3         # deals per ask: 753 deals from 2,490 negotiations, 11-08..11-10
 ASK_HORIZON_H = 2.5            # stock for this long: a supply window opens every 20 min, but not always on time
                                # (11-10 21:00: was 1.5; food is still held to 25 % of its shelf life)
@@ -121,9 +125,11 @@ def plan(inv, demand, cat, mem, now):
     surge = {s["sku"]: s.get("factor", 1.0) for s in inv.get("surge") or []}
 
     # 1. What buyers asked this shop for (asks.py): demand seen directly, SKU by SKU.
+    ask_lines = max(1, int(lines * ASK_LINE_SHARE))
+    demand_lines = max(ask_lines, lines - max(1, int(lines * BREADTH_LINE_SHARE)))
     spent = 0
     for sku, (rate, miss) in sorted(asks.rates(now).items(), key=lambda kv: -kv[1][0]):
-        if rate < ASK_MIN_RATE or len(buy) >= lines or sku not in cat:
+        if rate < ASK_MIN_RATE or len(buy) >= ask_lines or sku not in cat:
             continue
         x = cat[sku]
         if surge.get(sku, 1.0) > SURGE_MAX:
@@ -137,6 +143,8 @@ def plan(inv, demand, cat, mem, now):
         lp = x["list_price"]
         if qty < 1 or (lp > MAX_LIST and rate < 3):
             continue
+        if have_sku[sku] and qty < TOPUP_MIN:
+            continue                                         # a 1-2 unit top-up is not worth a line
         unit_cost = lp * EST_COST * surge.get(sku, 1.0)
         qty = min(qty, int((room - spent) / unit_cost), max(1, int(LINE_SPEND_SHARE * cap / unit_cost)))
         if qty < 1:
@@ -189,17 +197,19 @@ def plan(inv, demand, cat, mem, now):
                 continue
             if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy):
                 continue
-            qty = min(need, LINE_QTY_MAX, max(1, int((room - spent) / (lp * EST_COST))))
+            qty = min(need, LINE_QTY_MAX, max(1, int((room - spent) / (lp * EST_COST))),
+                      max(1, int(0.5 * LINE_SPEND_SHARE * cap / (lp * EST_COST))))   # dry run: 6 sofas, 2M
             est = lp * EST_COST * qty
             if qty < 1 or spent + est > room:
                 continue
             buy.append({"sku": sku, "qty": qty})
             why.append(f"{leaf(c)} x{qty} (score {score:.1f}, have {have[c]}, sku sold {hot_sku.get(sku, 0):.1f})")
+            have[c] += qty
             spent += est
             need -= qty
-            if need <= 0 or len(buy) >= lines:
+            if need <= 0 or len(buy) >= demand_lines:
                 break
-        if len(buy) >= lines:
+        if len(buy) >= demand_lines:
             break
     # Breadth: a shop with nothing in an order's category is not shown to that buyer at all.
     if len(buy) < lines and spent < room:
