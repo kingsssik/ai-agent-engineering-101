@@ -123,6 +123,21 @@ def plan(inv, demand, cat, mem, now):
     settles = mem.get("seen", {}).get("settle", 0)
     buy, why = [], []
     surge = {s["sku"]: s.get("factor", 1.0) for s in inv.get("surge") or []}
+    paid_cost = defaultdict(list)
+    for u in units:
+        paid_cost[u.get("sku")].append(u.get("cost") or 0)
+
+    def underwater(sku):
+        """11-11 23:51: the 2.32M-list sofa G8ec51935 was asked for ~20/h, so the asks loop bought it every
+        run (have 6-7), but its supply cost 1.55-1.68M x 1.04 sat above the 1.56M buyers pay for grade A
+        (market median of 15): 9 units over 1M, ~14.5M of stock, about 1 sale an hour. Skip a SKU whose
+        cost (held units, else the estimate) cannot be sold at the market's median with our margin."""
+        med = mm.sku_median(mem, sku, "A")
+        if not med:
+            return False
+        c = paid_cost.get(sku)
+        cost = sum(c) / len(c) if c else cat[sku]["list_price"] * EST_COST * surge.get(sku, 1.0)
+        return cost * 1.04 >= med
 
     # 1. What buyers asked this shop for (asks.py): demand seen directly, SKU by SKU.
     ask_lines = max(1, int(lines * ASK_LINE_SHARE))
@@ -145,6 +160,9 @@ def plan(inv, demand, cat, mem, now):
             continue
         if have_sku[sku] and qty < TOPUP_MIN:
             continue                                         # a 1-2 unit top-up is not worth a line
+        if underwater(sku):
+            why.append(f"skip {sku} cost above what buyers pay")
+            continue
         unit_cost = lp * EST_COST * surge.get(sku, 1.0)
         qty = min(qty, int((room - spent) / unit_cost), max(1, int(LINE_SPEND_SHARE * cap / unit_cost)))
         if qty < 1:
@@ -195,7 +213,7 @@ def plan(inv, demand, cat, mem, now):
             lp = cat[sku]["list_price"]
             if lp > MAX_LIST and score < 5:
                 continue
-            if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy):
+            if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy) or underwater(sku):
                 continue
             qty = min(need, LINE_QTY_MAX, max(1, int((room - spent) / (lp * EST_COST))),
                       max(1, int(0.5 * LINE_SPEND_SHARE * cap / (lp * EST_COST))))   # dry run: 6 sofas, 2M
