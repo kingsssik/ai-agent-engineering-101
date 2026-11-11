@@ -136,7 +136,9 @@ def plan(inv, demand, cat, mem, now):
         if not med:
             return False
         c = paid_cost.get(sku)
-        cost = sum(c) / len(c) if c else cat[sku]["list_price"] * EST_COST * surge.get(sku, 1.0)
+        # The cheapest held unit, not the mean: the shelf keeps the dear survivors (water G3434758a: held A
+        # units 12.4-16.3k, recent deals on units costing 8.3-11.4k), so a mean skipped a SKU still selling.
+        cost = min(c) if c else cat[sku]["list_price"] * EST_COST * surge.get(sku, 1.0)
         return cost * 1.04 >= med
 
     # 1. What buyers asked this shop for (asks.py): demand seen directly, SKU by SKU.
