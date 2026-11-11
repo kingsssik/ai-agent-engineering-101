@@ -45,9 +45,12 @@ HERE = Path(__file__).resolve().parent
 MEM = HERE / "memory" / "buyer.json"
 HEADERS = {"A2A-Version": "1.0"}
 MAX_ROUNDS = 7
-MAX_SHOPS = 3                  # (shop, SKU) pairs tried per order before giving up
+MAX_SHOPS = 4                  # (shop, SKU) pairs tried per order before giving up (11-11 17:00: was 3)
 DEADLINE = 230                 # seconds; the kit stops a buyer at 300
-CAP_SHARE = 0.70               # never pay more than this share of list price. 11-10: was 0.95. Saved averages
+CAP_SHARE = 0.72               # 11-11 17:00: was 0.70. Board 16:51: saved 0.2548, and any deal below 0.745 of
+                               # list lifts it; 64 orders/h but 28 deals/h (44 %), the rest walk-aways that add
+                               # nothing. Recent paid deals average 0.58-0.61 of list.
+                               # never pay more than this share of list price. 11-10: was 0.95. Saved averages
                                # surplus/list over deals only -- a walk-away costs nothing -- so a deal above
                                # the average drags it down. Last 516 paid deals: mean 0.673 of list; capped at
                                # 0.70 they keep 379 deals and lift saved per deal from 0.321 to 0.353.
