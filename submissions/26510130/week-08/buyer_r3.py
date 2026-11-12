@@ -56,7 +56,8 @@ CAP_SHARE = 0.72               # 11-11 17:00: was 0.70. Board 16:51: saved 0.254
                                # 0.70 they keep 379 deals and lift saved per deal from 0.321 to 0.353.
 OPEN_SHARE, STEP_SHARE = 0.52, 0.04   # offer ceiling per round: 0.56, 0.60, ... of list, up to the cap
                                # (272 of 516 deals closed in round 1, mostly by taking the shop's first ask)
-SHOWN = 5                      # pairs put in front of the harness
+C_SKIP_H = 6                   # hours a (shop, SKU) refused at payment for grade C is passed over
+SHOWN = 5                     # pairs put in front of the harness
 T0 = time.time()
 
 
@@ -127,6 +128,8 @@ def absorb(m, state):
             row["refused"] += 1
             row["last"] = f"refused: {str(e.get('reason'))[:80]}"
             log(f"[buyer] memory: {p['shop']} refused at payment: {e.get('reason')}")
+            if "grade C" in str(e.get("reason")):
+                m.setdefault("c_skip", {})[f"{p['shop']}|{p.get('sku')}"] = time.time()
     for e in new_lines(m, Path(state) / "broken.jsonl", "broken"):
         cands = [p for p in m["purchases"] if p.get("paid") and p.get("name") == e.get("name")
                  and 0 <= e.get("broke_at", 0) - p["ts"] < 8 * 3600]
@@ -164,9 +167,20 @@ def candidates(order, shops, cat, m, mkt):
     acceptable = set(order.get("acceptable") or [])
     scams = guard.load()                                     # shops caught writing instructions to agents
     rows = []
+    # 11-12 23:11: 26 grade-C goods agreed then refused at payment in an hour, even after asking the grade up
+    # front -- 50 of the last 68 from inextro, 17 from seochanit, whose replies never name it. A (shop, SKU) the
+    # kit refused for grade C is passed over for C_SKIP_H; another shop's unit of that SKU is tried instead.
+    c_skip = dict(m.get("c_skip") or {})
+    for p in m.get("purchases") or []:
+        if p.get("paid") is False and "grade C" in str(p.get("reason")):
+            k = f"{p['shop']}|{p.get('sku')}"
+            c_skip[k] = max(c_skip.get(k, 0), p.get("ts", 0))
     for s in shops:
         for o in s.get("offers") or []:
             if o.get("sku") not in acceptable or not o.get("qty"):
+                continue
+            if time.time() - c_skip.get(f"{s['name']}|{o.get('sku')}", 0) < C_SKIP_H * 3600 \
+                    and order.get("kind") != "food":
                 continue
             info = cat.get(o["sku"]) or {}
             lp = info.get("list_price") or 0
