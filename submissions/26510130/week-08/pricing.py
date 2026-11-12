@@ -85,7 +85,9 @@ def ask(unit, mem, now=None):
     return max(floor(unit, mem, now), int(round(a)))
 
 
-WARRANTY_MAX_LIST = 500_000    # 11-12 21:11: refunds return the whole price and the unit is gone. Sofa G8ec51935
+WARRANTY_MAX_LIST = 200_000    # 11-13 00:11: was 500k. 22:15-00:11 refunds 1.12M, all under 500k list: mattress
+                               # G021aae64 (list 546k) 431,716 + 405,361, G1515d951 (list 424k) 283,125; Book fell
+                               # 0.59M in that hour on +1.1M revenue. 11-12 21:11 (first cap): refunds return the whole price and the unit is gone. Sofa G8ec51935
                                # (list 2.32M) refunded 1,350,139 at 20:52; 11-11 sofas/mattresses refunded 1.04M in
                                # 2 h. The floor adds break_rate(grade) x list x 0.9 (A: 3 %, ~62k on that sofa), but
                                # big furniture breaks far more often than the grade average, so no warranty above this.
