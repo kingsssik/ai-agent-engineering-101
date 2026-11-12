@@ -289,6 +289,12 @@ def grade_of(t):
     return m.group(1).upper() if m else None
 
 
+def shelf_left(said):
+    import re
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hours?)\s+(?:of\s+)?shelf", said or "", re.I)
+    return float(m.group(1)) if m else None
+
+
 def cap_of(row, order, grade):
     c = COST_SHARE.get(grade) if grade else MIX_COST.get(row.get("kind") or order.get("kind"), 0.55)
     share = min(0.76, 1 - TARGET_KEPT * (1 - c))      # A 0.748, B 0.64, C 0.53, unknown goods 0.72 / food 0.64
@@ -351,6 +357,15 @@ def trade(row, order, mkt):
     task_id, last, rnd = t.get("id"), None, 0
     said = heard(row, t)
     grade = grade_of(t)
+    # 11-12 20:11: 19:11-20:11, 63 orders, 48 agreed receipts but 20 paid deals -- the kit's payment policy then
+    # refused 22 grade-C goods and 6 short-shelf foods, so the order was spent on a deal this agent never pays.
+    # The shop states grade and shelf life in its first reply: walk away there and try the next shop.
+    pol = policy(order, mkt)
+    if pol.get("grades") and grade and grade not in pol["grades"]:
+        return None, None, 0, f"skipped: grade {grade}, policy pays {pol['grades']}"
+    hl = shelf_left(said)
+    if pol.get("min_hours_left") and hl is not None and hl < pol["min_hours_left"]:
+        return None, None, 0, f"skipped: {hl:.0f} h of shelf life, policy needs {pol['min_hours_left']:.0f}"
     while state_of(t) == "TASK_STATE_INPUT_REQUIRED" and rnd < MAX_ROUNDS and time.time() - T0 < DEADLINE:
         rnd += 1
         ask = ask_of(t, row["name"], said)                 # from the cleaned text: no planted numbers
