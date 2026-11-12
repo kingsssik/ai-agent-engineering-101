@@ -65,7 +65,9 @@ SUPPLY_LINE_S = 11             # one supply line takes ~10 s; lines past the win
 SEED_SPEND = 1_200_000         # cold start: at most this much, spread wide
 COLD_SETTLES = 40              # market settles seen before demand is trusted
 MAX_LIST = 400_000             # dearer SKUs only when their category is selling
-STOP_BEFORE_END = 36 * 3600    # no buying in the last 36 h
+STOP_BEFORE_END = 2 * 3600     # 11-12 13:51: was 36 h. Unsold units keep their cost in Book at the end (agent.md),
+                               # so stock that does not sell costs only storage (1 %/day); keep buying what sells.
+                               # Food that would expire before the end is still skipped (late_food below).
 LINES = 10                     # the kit buys at most 10 lines a run
 EST_COST = 0.6                 # expected cost / list price before the unit arrives
 
@@ -127,6 +129,13 @@ def plan(inv, demand, cat, mem, now):
     for u in units:
         paid_cost[u.get("sku")].append(u.get("cost") or 0)
 
+    to_end_h = (ROUND_END - now) / 3600
+
+    def late_food(sku):
+        """Food whose shelf life ends before the round does: unsold, its cost leaves Book."""
+        x = cat[sku]
+        return x.get("kind") == "food" and (x.get("shelf_hours") or 1e9) < to_end_h and to_end_h < 48
+
     def underwater(sku):
         """11-11 23:51: the 2.32M-list sofa G8ec51935 was asked for ~20/h, so the asks loop bought it every
         run (have 6-7), but its supply cost 1.55-1.68M x 1.04 sat above the 1.56M buyers pay for grade A
@@ -164,6 +173,8 @@ def plan(inv, demand, cat, mem, now):
             continue                                         # a 1-2 unit top-up is not worth a line
         if underwater(sku):
             why.append(f"skip {sku} cost above what buyers pay")
+            continue
+        if late_food(sku):
             continue
         unit_cost = lp * EST_COST * surge.get(sku, 1.0)
         qty = min(qty, int((room - spent) / unit_cost), max(1, int(LINE_SPEND_SHARE * cap / unit_cost)))
@@ -215,7 +226,8 @@ def plan(inv, demand, cat, mem, now):
             lp = cat[sku]["list_price"]
             if lp > MAX_LIST and score < 5:
                 continue
-            if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy) or underwater(sku):
+            if surge.get(sku, 1.0) > SURGE_MAX or any(b["sku"] == sku for b in buy) or underwater(sku) \
+                    or late_food(sku):
                 continue
             qty = min(need, LINE_QTY_MAX, max(1, int((room - spent) / (lp * EST_COST))),
                       max(1, int(0.5 * LINE_SPEND_SHARE * cap / (lp * EST_COST))))   # dry run: 6 sofas, 2M

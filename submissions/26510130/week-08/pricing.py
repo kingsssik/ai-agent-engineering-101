@@ -59,10 +59,13 @@ def floor(unit, mem, now=None):
         elif str(unit.get("grade")) == "C":
             f = cost * 1.0
     to_end = (mm_round_end() - now) / 3600
-    if to_end < 12:
-        f = min(f, cost * 0.4)                             # unsold at the end is the whole cost lost
-    elif to_end < 36:
-        f = min(f, cost * 0.85)
+    # 11-12 13:51: was "under 36 h to the end: cost x 0.85, under 12 h: cost x 0.4", built on the belief that unsold
+    # stock is lost. agent.md: "Book = cash + what the unsold units cost" -- a unit still on the shelf at the end
+    # keeps its whole cost in Book, so selling it below cost only cuts Book (27.7M of stock at cost on 11-12).
+    # Only food that would expire before the end loses its cost; the shelf-life tiers above already handle it.
+    # In the last 12 h a unit that keeps its value opens to break-even: revenue up, Book unchanged.
+    if to_end < 12 and (h is None or h > to_end):
+        f = min(f, cost * 1.0)
     if warranty(unit, mem):
         f += mm.break_rate(mem, unit.get("grade")) * unit.get("list_price", 0) * 0.9
     return max(1, int(round(f)))
