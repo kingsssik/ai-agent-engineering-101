@@ -351,7 +351,9 @@ def heard(row, t):
 def trade(row, order, mkt):
     """One shop. Returns (receipt, agreed, rounds, note)."""
     shop = Shop(row["url"])
-    t = shop.send(f"I want to buy {row['name']} ({row['sku']})")
+    # 11-12 22:11: after the grade skip, 20 grade-C goods an hour were still agreed and then refused at payment
+    # (13 skipped): those shops never named the grade. Ask for it up front so grade_of() can read it.
+    t = shop.send(f"I want to buy {row['name']} ({row['sku']}). Which grade (A/B/C) is the unit you would sell?")
     if t is None or state_of(t) != "TASK_STATE_INPUT_REQUIRED":
         return None, None, 0, f"shop declined: {text_of(t)[:80]}"
     task_id, last, rnd = t.get("id"), None, 0
