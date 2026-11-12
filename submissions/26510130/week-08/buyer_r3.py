@@ -271,8 +271,32 @@ Reply with one JSON object and nothing else, one of:
 {{"action": "walk_away"}}"""
 
 
-def haggle(row, order, mkt, ask, last, rnd, said):
-    cap = min(order["budget"], int(row["list"] * CAP_SHARE))
+# 11-12 18:11, patch 3.6: saved is now the mean of (list - price) / (list - unit cost), the share of the shop's
+# margin kept, capped at 1 -- board saved went 0.2597 -> 0.6691 overnight (student median 0.689). A price that is
+# cheap against list can still score badly on a cheap unit: at 0.60 of list a C unit (cost ~0.35) keeps 0.62, an
+# A unit (cost ~0.65) keeps 1.0. agent.md supply: cost / list is A 55-75 %, B 40-60 %, C 25-45 %. So the cap is
+# the price that keeps TARGET_KEPT of the expected margin for the grade the shop states (or the grade mix).
+TARGET_KEPT = 0.72
+COST_SHARE = {"A": 0.65, "B": 0.50, "C": 0.35}
+MIX_COST = {"goods": 0.617, "food": 0.50}       # goods A70/B20 (C refused at payment), food A25/B50/C25
+
+
+def grade_of(t):
+    import re
+    blob = json.dumps(t, ensure_ascii=False) if t else ""
+    m = re.search(r'"grade"\s*:\s*"([ABC])"', blob) or re.search(r"(?i)\bgrade\s*[:=]?\s*([ABC])\b", blob) \
+        or re.search(r"(?i)\b([ABC])\s+grade\b", blob) or re.search(r"(?i)(?:new|damaged|refurbished)\s*\(([ABC])\)", blob)
+    return m.group(1).upper() if m else None
+
+
+def cap_of(row, order, grade):
+    c = COST_SHARE.get(grade) if grade else MIX_COST.get(row.get("kind") or order.get("kind"), 0.55)
+    share = min(0.76, 1 - TARGET_KEPT * (1 - c))      # A 0.748, B 0.64, C 0.53, unknown goods 0.72 / food 0.64
+    return min(order["budget"], int(row["list"] * share))
+
+
+def haggle(row, order, mkt, ask, last, rnd, said, grade=None):
+    cap = cap_of(row, order, grade)
     step_cap = min(cap, int(row["list"] * (OPEN_SHARE + STEP_SHARE * rnd)))   # concede slowly, in code
     d = harness.ask(HAGGLE.format(name=row["name"][:60], list=row["list"], cap=cap, said=said[:200], ask=ask,
                                   last=last, round=rnd, max_rounds=MAX_ROUNDS,
@@ -326,13 +350,15 @@ def trade(row, order, mkt):
         return None, None, 0, f"shop declined: {text_of(t)[:80]}"
     task_id, last, rnd = t.get("id"), None, 0
     said = heard(row, t)
+    grade = grade_of(t)
     while state_of(t) == "TASK_STATE_INPUT_REQUIRED" and rnd < MAX_ROUNDS and time.time() - T0 < DEADLINE:
         rnd += 1
         ask = ask_of(t, row["name"], said)                 # from the cleaned text: no planted numbers
-        action, price = haggle(row, order, mkt, ask, last, rnd, said)
+        grade = grade or grade_of(t)
+        action, price = haggle(row, order, mkt, ask, last, rnd, said, grade)
         if action == "walk_away":
-            return None, None, rnd, f"walked away at ask {ask}"
-        cap = min(order["budget"], int(row["list"] * CAP_SHARE))
+            return None, None, rnd, f"walked away at ask {ask} (grade {grade or '?'})"
+        cap = cap_of(row, order, grade)
         assert price is not None and price <= cap, "code guard: never offer above the cap"
         last = price
         t = shop.send(str(price), task_id)
