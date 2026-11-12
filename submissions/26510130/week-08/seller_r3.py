@@ -244,9 +244,15 @@ class Seller(AgentExecutor):
                 guard.flag("buyer@" + str(task.context_id)[:8], "buyer-msg", text, rules, ref=f"task:{task.id[:8]}")
                 text = guard.clean(text)
             deal["lines"].append(f"buyer: {text[:200]}")
-            m = re.search(r"\d[\d,]*", text)
+            # 11-12 17:11: "DEAL G35351812 ... at 35351812 (list 18900)" -- the first number in the text was the
+            # SKU's digits, read as an offer above the ask and accepted; the buyer's budget check then refuses to
+            # pay, so the unit is locked for nothing. Numbers glued to letters (SKUs, 10kg) are not offers, and
+            # an "offer" over 1.5x list is a misread, not a price.
+            m = re.search(r"(?<![A-Za-z0-9])\d[\d,]*(?![A-Za-z0-9])", re.sub(r"\(?G[0-9a-fA-F]{8}\)?", " ", text))
             if m:
-                deal["offer"] = int(m.group().replace(",", ""))
+                n = int(m.group().replace(",", "") or 0)
+                if 0 < n <= 1.5 * (deal["unit"].get("list_price") or n):
+                    deal["offer"] = n
 
         u = deal["unit"]
         action, price = await loop.run_in_executor(None, decide, deal, mem)
