@@ -49,7 +49,8 @@ NAME = "YAHO1212"
 MARKET_DIR = Path(os.environ.get("MARKET_DIR", ".market"))
 MAX_ROUNDS = 6
 SOLD_TTL = 300                 # a unit with a receipt out is not offered again for 5 min (the kit pays in seconds)
-OPEN_TTL = 600                 # a negotiation idle this long was abandoned by the buyer; forget it
+UNPAID_MAX = 3                 # a unit with this many unpaid receipts is no longer offered
+OPEN_TTL = 600                # a negotiation idle this long was abandoned by the buyer; forget it
 SKU_RE = re.compile(r"\((G[0-9a-f]{8})\)")
 R2_RESERVE = {"lamp": 100, "chair": 180, "bookshelf": 260}    # before Round 3 opens: the week-07 items
 
@@ -116,6 +117,10 @@ def find_unit(text, taken, busy=frozenset(), unpaid=None):
     # Then the cheapest unit: A sofas at cost 1.31-1.66M were offered oldest-first at floors of 1.68-1.79M
     # while buyers offered 1.40-1.53M, which the 1.31M unit's floor (1.43M) would have met.
     unpaid = unpaid or {}
+    # 11-14 15:11: going last was not enough when a unit is the only one of its SKU -- grade-B sofa
+    # u-107ee1c87ca9 was agreed at 1,182,000 eight times since 11-13 21:07 and never paid. After
+    # UNPAID_MAX unpaid receipts a unit is not offered; the buyer moves on to a shop that can close.
+    fit = [u for u in fit if unpaid.get(u["unit"], 0) < UNPAID_MAX]
     return min(fit, key=lambda u: (u["unit"] in busy, unpaid.get(u["unit"], 0), u.get("expires_at") or float("inf"),
                                    u.get("cost") or 0), default=None)
 
